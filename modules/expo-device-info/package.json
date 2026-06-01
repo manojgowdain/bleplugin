@@ -1,0 +1,19 @@
+{
+  "name": "expo-device-info",
+  "version": "1.0.0",
+  "main": "src/DeviceInfo.js",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/DeviceInfo.js",
+    "./plugin": "./plugin/withExpoDeviceInfo.js",
+    "./app.plugin": "./app.plugin.js",
+    "./app.plugin.js": "./app.plugin.js",
+    "./package.json": "./package.json"
+  },
+  "peerDependencies": {
+    "expo": "*",
+    "expo-modules-core": "*",
+    "react": "*",
+    "react-native": "*"
+  }
+}

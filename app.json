@@ -4,10 +4,12 @@
     "slug": "modules",
     "version": "1.0.0",
     "orientation": "portrait",
+    "plugins": ["expo-device-info"],
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.swarupn046.modules"
     },
     "android": {
       "adaptiveIcon": {
@@ -15,7 +17,8 @@
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
-      }
+      },
+      "package": "com.swarupn046.modules"
     },
     "web": {
       "favicon": "./assets/favicon.png"
