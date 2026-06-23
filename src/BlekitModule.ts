@@ -202,4 +202,4 @@ declare class BlekitModule extends NativeModule<BlekitModuleEvents> {
 }
 
 export default requireNativeModule<BlekitModule>('Blekit');
-export { BlekitModule };
+export type { BlekitModule };
