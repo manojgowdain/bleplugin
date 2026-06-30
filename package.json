@@ -26,7 +26,6 @@
   "author": "ManojGowda89 <mail@manojgowda.in> ( )",
   "license": "MIT",
   "homepage": "https://github.com/ManojGowda89/bleplugin.git#readme",
-  "dependencies": {},
   "devDependencies": {
     "@babel/core": "^7.26.0",
     "@types/jest": "^29.2.1",

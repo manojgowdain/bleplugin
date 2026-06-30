@@ -181,7 +181,7 @@ export class BleError extends Error {
       this.iosErrorCode = null;
       this.androidErrorCode = null;
       this.reason = nativeBleError;
-    } else {
+    } else if (typeof nativeBleError.errorCode === 'number') {
       const mapping = errorMessageMapping || BleErrorCodeMessage;
       const message = nativeBleError.reason || mapping[nativeBleError.errorCode] || 'Unknown error';
       super(message);
@@ -194,6 +194,14 @@ export class BleError extends Error {
       this.serviceUUID = nativeBleError.serviceUUID;
       this.characteristicUUID = nativeBleError.characteristicUUID;
       this.descriptorUUID = nativeBleError.descriptorUUID;
+    } else {
+      const fallback = nativeBleError as Partial<Error & { message?: string; code?: string }>;
+      super(fallback.message || fallback.code || 'Unknown error');
+      this.errorCode = BleErrorCode.UnknownError;
+      this.attErrorCode = null;
+      this.iosErrorCode = null;
+      this.androidErrorCode = null;
+      this.reason = fallback.message || fallback.code || 'Unknown error';
     }
     Object.setPrototypeOf(this, BleError.prototype);
   }

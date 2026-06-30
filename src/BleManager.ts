@@ -51,18 +51,19 @@ export class BleManager {
 
     // Set up global listeners
     this._notificationListener = BleModule.addListener('onCharacteristicNotification', (event) => {
-      const { characteristicId, value, error } = event;
+      const { characteristicId, value, error, characteristic } = event;
       const listeners = this._notificationListeners.get(characteristicId);
       if (listeners) {
         let bleError: BleError | null = null;
         let charObj: Characteristic | null = null;
         if (error) {
           bleError = new BleError(error);
+        } else if (characteristic) {
+          charObj = new Characteristic(characteristic, this);
         } else {
-          // Recreate characteristic object with value
           const nativeChar: NativeCharacteristic = {
             id: characteristicId,
-            uuid: '', // native doesn't necessarily send full details for notification, but we can mock
+            uuid: '',
             serviceID: 0,
             serviceUUID: '',
             deviceID: '',
@@ -341,8 +342,12 @@ export class BleManager {
       .then((id) => {
         charId = id;
         if (subscriptionRemoved) {
-          // Subscription was removed before promise resolved
           this._removeNotificationListener(id, listener);
+          BleModule.stopMonitoringCharacteristicForDevice(
+            deviceAddress,
+            serviceUUID,
+            characteristicUUID
+          ).catch(() => {});
           return;
         }
         this._addNotificationListener(id, listener);
@@ -356,6 +361,11 @@ export class BleManager {
         subscriptionRemoved = true;
         if (charId !== null) {
           this._removeNotificationListener(charId, listener);
+          BleModule.stopMonitoringCharacteristicForDevice(
+            deviceAddress,
+            serviceUUID,
+            characteristicUUID
+          ).catch(() => {});
         }
       },
     };
@@ -398,6 +408,7 @@ export class BleManager {
     return {
       remove: () => {
         this._removeNotificationListener(characteristicId, listener);
+        BleModule.stopMonitoringCharacteristic(characteristicId).catch(() => {});
       },
     };
   }

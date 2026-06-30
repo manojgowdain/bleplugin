@@ -411,29 +411,30 @@ class BlekitModule : Module() {
       val charId = getCharacteristicId(characteristic)
 
       mainHandler.post {
-        gatt.setCharacteristicNotification(characteristic, true)
-        val cccd = characteristic.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))
-        if (cccd != null) {
-          val properties = characteristic.properties
-          cccd.value = if ((properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0) {
-            BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-          } else {
-            BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
-          }
-          gatt.writeDescriptor(cccd)
-        }
+        setCharacteristicMonitoring(gatt, characteristic, true)
 
         if (transactionId != null) {
           activeTransactions[transactionId] = {
-            gatt.setCharacteristicNotification(characteristic, false)
-            cccd?.let {
-              it.value = BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
-              gatt.writeDescriptor(it)
-            }
+            setCharacteristicMonitoring(gatt, characteristic, false)
           }
         }
 
         promise.resolve(charId)
+      }
+    }
+
+    AsyncFunction("stopMonitoringCharacteristicForDevice") { deviceAddress: String, serviceUUID: String, characteristicUUID: String, promise: Promise ->
+      val gatt = activeGatts[deviceAddress]
+      val service = gatt?.getService(UUID.fromString(serviceUUID))
+      val characteristic = service?.getCharacteristic(UUID.fromString(characteristicUUID))
+      if (gatt == null || characteristic == null) {
+        promise.reject("CharacteristicNotFound", "Characteristic not found", null)
+        return@AsyncFunction
+      }
+
+      mainHandler.post {
+        setCharacteristicMonitoring(gatt, characteristic, false)
+        promise.resolve()
       }
     }
 
@@ -526,28 +527,34 @@ class BlekitModule : Module() {
       }
 
       mainHandler.post {
-        gatt.setCharacteristicNotification(characteristic, true)
-        val cccd = characteristic.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))
-        if (cccd != null) {
-          val properties = characteristic.properties
-          cccd.value = if ((properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0) {
-            BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-          } else {
-            BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
-          }
-          gatt.writeDescriptor(cccd)
-        }
+        setCharacteristicMonitoring(gatt, characteristic, true)
 
         if (transactionId != null) {
           activeTransactions[transactionId] = {
-            gatt.setCharacteristicNotification(characteristic, false)
-            cccd?.let {
-              it.value = BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
-              gatt.writeDescriptor(it)
-            }
+            setCharacteristicMonitoring(gatt, characteristic, false)
           }
         }
 
+        promise.resolve()
+      }
+    }
+
+    AsyncFunction("stopMonitoringCharacteristic") { characteristicId: Int, promise: Promise ->
+      val characteristic = characteristicsMap[characteristicId]
+      if (characteristic == null) {
+        promise.reject("CharacteristicNotFound", "Characteristic not found", null)
+        return@AsyncFunction
+      }
+
+      val service = characteristic.service
+      val gatt = activeGatts.values.firstOrNull { it.services.contains(service) }
+      if (gatt == null) {
+        promise.reject("DeviceNotConnected", "Gatt not found for characteristic", null)
+        return@AsyncFunction
+      }
+
+      mainHandler.post {
+        setCharacteristicMonitoring(gatt, characteristic, false)
         promise.resolve()
       }
     }
@@ -763,6 +770,32 @@ class BlekitModule : Module() {
     isScanning = false
   }
 
+  private fun setCharacteristicMonitoring(
+    gatt: BluetoothGatt,
+    characteristic: BluetoothGattCharacteristic,
+    enabled: Boolean
+  ): Boolean {
+    if (!gatt.setCharacteristicNotification(characteristic, enabled)) {
+      return false
+    }
+
+    val cccd = characteristic.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))
+      ?: return true
+
+    cccd.value = if (enabled) {
+      val properties = characteristic.properties
+      if ((properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0) {
+        BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+      } else {
+        BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+      }
+    } else {
+      BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
+    }
+
+    return gatt.writeDescriptor(cccd)
+  }
+
   private val gattCallback = object : BluetoothGattCallback() {
     override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
       val address = gatt.device.address
@@ -831,6 +864,7 @@ class BlekitModule : Module() {
       val valueBase64 = Base64.encodeToString(characteristic.value, Base64.NO_WRAP)
       sendEvent("onCharacteristicNotification", mapOf(
         "characteristicId" to charId,
+        "characteristic" to serializeCharacteristic(characteristic, characteristic.service, gatt.device.address),
         "value" to valueBase64,
         "error" to null
       ))

@@ -57,6 +57,7 @@ export type BlekitModuleEvents = {
   onDeviceDiscovered: (params: { device: NativeDevice }) => void;
   onCharacteristicNotification: (params: {
     characteristicId: number;
+    characteristic?: NativeCharacteristic;
     value: string | null;
     error: any | null;
   }) => void;
@@ -146,6 +147,11 @@ declare class BlekitModule extends NativeModule<BlekitModuleEvents> {
     characteristicUUID: string,
     transactionId: string | null
   ): Promise<number>; // returns characteristic ID
+  stopMonitoringCharacteristicForDevice(
+    deviceAddress: string,
+    serviceUUID: string,
+    characteristicUUID: string
+  ): Promise<void>;
 
   // ID-based GATT operations
   readCharacteristic(
@@ -159,6 +165,7 @@ declare class BlekitModule extends NativeModule<BlekitModuleEvents> {
     transactionId: string | null
   ): Promise<NativeCharacteristic>;
   monitorCharacteristic(characteristicId: number, transactionId: string | null): Promise<void>;
+  stopMonitoringCharacteristic(characteristicId: number): Promise<void>;
 
   // Descriptor operations
   readDescriptorForDevice(

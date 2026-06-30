@@ -383,6 +383,29 @@ public class BlekitModule: Module {
       promise.resolve(charId)
     }
 
+    AsyncFunction("stopMonitoringCharacteristicForDevice") { (deviceAddress: String, serviceUUID: String, characteristicUUID: String, promise: Promise) in
+      guard let manager = self.manager else {
+        promise.reject("BleManagerNotCreated", "BleManager was not created. Call createClient first.")
+        return
+      }
+
+      guard let uuid = UUID(uuidString: deviceAddress), let peripheral = manager.peripherals[uuid] else {
+        promise.reject("DeviceNotFound", "Device \(deviceAddress) not found.")
+        return
+      }
+
+      guard let services = peripheral.services,
+            let service = services.first(where: { $0.uuid.uuidString.lowercased() == serviceUUID.lowercased() }),
+            let chars = service.characteristics,
+            let char = chars.first(where: { $0.uuid.uuidString.lowercased() == characteristicUUID.lowercased() }) else {
+        promise.reject("CharacteristicNotFound", "Characteristic not found.")
+        return
+      }
+
+      peripheral.setNotifyValue(false, for: char)
+      promise.resolve()
+    }
+
     // ID-based GATT operations
     AsyncFunction("readCharacteristic") { (characteristicId: Int, transactionId: String?, promise: Promise) in
       guard let manager = self.manager, let char = manager.characteristicsById[characteristicId] else {
@@ -465,6 +488,21 @@ public class BlekitModule: Module {
         }
       }
 
+      promise.resolve()
+    }
+
+    AsyncFunction("stopMonitoringCharacteristic") { (characteristicId: Int, promise: Promise) in
+      guard let manager = self.manager, let char = manager.characteristicsById[characteristicId] else {
+        promise.reject("CharacteristicNotFound", "Characteristic \(characteristicId) not found.")
+        return
+      }
+
+      guard let peripheral = manager.peripherals.values.first(where: { p in p.services?.contains(where: { s in s.characteristics?.contains(char) ?? false }) ?? false }) else {
+        promise.reject("DeviceNotFound", "Device not found.")
+        return
+      }
+
+      peripheral.setNotifyValue(false, for: char)
       promise.resolve()
     }
 
@@ -658,5 +696,395 @@ public class BlekitModule: Module {
 
       peripheral.readRSSI()
     }
+  }
+}
+
+final class BlekitManager: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
+  weak var module: BlekitModule?
+  var centralManager: CBCentralManager!
+  var peripherals: [UUID: CBPeripheral] = [:]
+  var activeTransactions: [String: () -> Void] = [:]
+
+  var connectionPromises: [UUID: (resolve: ([String: Any?]) -> Void, reject: (String) -> Void)] = [:]
+  var discoveryPromises: [UUID: (resolve: ([String: Any?]) -> Void, reject: (String) -> Void)] = [:]
+  var readCharPromises: [Int: (resolve: ([String: Any?]) -> Void, reject: (String) -> Void)] = [:]
+  var writeCharPromises: [Int: (resolve: ([String: Any?]) -> Void, reject: (String) -> Void)] = [:]
+  var readDescPromises: [Int: (resolve: ([String: Any?]) -> Void, reject: (String) -> Void)] = [:]
+  var writeDescPromises: [Int: (resolve: ([String: Any?]) -> Void, reject: (String) -> Void)] = [:]
+  var rssiPromises: [UUID: (resolve: (NSNumber) -> Void, reject: (String) -> Void)] = [:]
+
+  var isScanning = false
+  var characteristicsById: [Int: CBCharacteristic] = [:]
+  var descriptorsById: [Int: CBDescriptor] = [:]
+
+  private var servicesById: [Int: CBService] = [:]
+  private var idsByObject = [ObjectIdentifier: Int]()
+  private var nextId = 1
+  private var advertisementDataByPeripheral: [UUID: [String: Any]] = [:]
+  private var rssiByPeripheral: [UUID: NSNumber] = [:]
+  private var pendingDiscoveryServices: [UUID: Set<ObjectIdentifier>] = [:]
+  private var pendingDiscoveryCharacteristics: [UUID: Set<ObjectIdentifier>] = [:]
+
+  init(module: BlekitModule, restoreIdentifier: String?) {
+    self.module = module
+    super.init()
+    var options: [String: Any]? = nil
+    if let restoreIdentifier = restoreIdentifier {
+      options = [CBCentralManagerOptionRestoreIdentifierKey: restoreIdentifier]
+    }
+    centralManager = CBCentralManager(delegate: self, queue: nil, options: options)
+  }
+
+  func invalidate() {
+    if isScanning {
+      centralManager.stopScan()
+    }
+    for peripheral in peripherals.values where peripheral.state == .connected || peripheral.state == .connecting {
+      centralManager.cancelPeripheralConnection(peripheral)
+    }
+    activeTransactions.removeAll()
+    connectionPromises.removeAll()
+    discoveryPromises.removeAll()
+    readCharPromises.removeAll()
+    writeCharPromises.removeAll()
+    readDescPromises.removeAll()
+    writeDescPromises.removeAll()
+    rssiPromises.removeAll()
+    pendingDiscoveryServices.removeAll()
+    pendingDiscoveryCharacteristics.removeAll()
+  }
+
+  func centralManagerDidUpdateState(_ central: CBCentralManager) {
+    module?.sendEvent("onStateChange", ["state": getBluetoothStateString(central.state)])
+  }
+
+  func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
+    peripheral.delegate = self
+    peripherals[peripheral.identifier] = peripheral
+    advertisementDataByPeripheral[peripheral.identifier] = advertisementData
+    rssiByPeripheral[peripheral.identifier] = RSSI
+    module?.sendEvent("onDeviceDiscovered", [
+      "device": serializeDevice(peripheral, rssi: RSSI, advData: advertisementData)
+    ])
+  }
+
+  func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+    peripheral.delegate = self
+    peripherals[peripheral.identifier] = peripheral
+    connectionPromises.removeValue(forKey: peripheral.identifier)?.resolve(serializeDevice(peripheral, rssi: rssiByPeripheral[peripheral.identifier], advData: advertisementDataByPeripheral[peripheral.identifier]))
+  }
+
+  func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+    connectionPromises.removeValue(forKey: peripheral.identifier)?.reject(error?.localizedDescription ?? "Connection failed")
+  }
+
+  func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+    if let promise = connectionPromises.removeValue(forKey: peripheral.identifier) {
+      promise.resolve(serializeDevice(peripheral, rssi: rssiByPeripheral[peripheral.identifier], advData: advertisementDataByPeripheral[peripheral.identifier]))
+    }
+
+    let errorMap: [String: Any?]? = error.map {
+      [
+        "errorCode": 201,
+        "attErrorCode": nil,
+        "iosErrorCode": ($0 as NSError).code,
+        "androidErrorCode": nil,
+        "reason": $0.localizedDescription,
+        "deviceID": peripheral.identifier.uuidString
+      ]
+    }
+    module?.sendEvent("onDeviceDisconnected", [
+      "deviceId": peripheral.identifier.uuidString,
+      "error": errorMap as Any
+    ])
+  }
+
+  func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
+    if let restored = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] {
+      for peripheral in restored {
+        peripheral.delegate = self
+        peripherals[peripheral.identifier] = peripheral
+      }
+    }
+  }
+
+  func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+    if let error = error {
+      discoveryPromises.removeValue(forKey: peripheral.identifier)?.reject(error.localizedDescription)
+      return
+    }
+
+    let services = peripheral.services ?? []
+    if services.isEmpty {
+      discoveryPromises.removeValue(forKey: peripheral.identifier)?.resolve(serializeDevice(peripheral, rssi: rssiByPeripheral[peripheral.identifier], advData: advertisementDataByPeripheral[peripheral.identifier]))
+      return
+    }
+
+    pendingDiscoveryServices[peripheral.identifier] = Set(services.map { ObjectIdentifier($0) })
+    for service in services {
+      peripheral.discoverCharacteristics(nil, for: service)
+    }
+  }
+
+  func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+    if let error = error {
+      discoveryPromises.removeValue(forKey: peripheral.identifier)?.reject(error.localizedDescription)
+      return
+    }
+
+    for characteristic in service.characteristics ?? [] {
+      _ = getCharacteristicId(characteristic, for: service, for: peripheral)
+      peripheral.discoverDescriptors(for: characteristic)
+    }
+
+    pendingDiscoveryServices[peripheral.identifier]?.remove(ObjectIdentifier(service))
+    let characteristics = service.characteristics ?? []
+    if !characteristics.isEmpty {
+      var pending = pendingDiscoveryCharacteristics[peripheral.identifier] ?? Set<ObjectIdentifier>()
+      for characteristic in characteristics {
+        pending.insert(ObjectIdentifier(characteristic))
+      }
+      pendingDiscoveryCharacteristics[peripheral.identifier] = pending
+    }
+
+    finishDiscoveryIfReady(for: peripheral)
+  }
+
+  func peripheral(_ peripheral: CBPeripheral, didDiscoverDescriptorsFor characteristic: CBCharacteristic, error: Error?) {
+    if let error = error {
+      discoveryPromises.removeValue(forKey: peripheral.identifier)?.reject(error.localizedDescription)
+      return
+    }
+
+    for descriptor in characteristic.descriptors ?? [] {
+      _ = getDescriptorId(descriptor, for: characteristic, for: peripheral)
+    }
+    pendingDiscoveryCharacteristics[peripheral.identifier]?.remove(ObjectIdentifier(characteristic))
+    finishDiscoveryIfReady(for: peripheral)
+  }
+
+  func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+    let charId = getCharacteristicId(characteristic, for: characteristic.service, for: peripheral)
+    if let promise = readCharPromises.removeValue(forKey: charId) {
+      if let error = error {
+        promise.reject(error.localizedDescription)
+      } else {
+        promise.resolve(serializeCharacteristic(characteristic, for: peripheral))
+      }
+      return
+    }
+
+    let errorMap = error.map { bleError($0, code: 402, deviceID: peripheral.identifier.uuidString, characteristicUUID: characteristic.uuid.uuidString) }
+    module?.sendEvent("onCharacteristicNotification", [
+      "characteristicId": charId,
+      "characteristic": serializeCharacteristic(characteristic, for: peripheral),
+      "value": characteristic.value?.base64EncodedString(),
+      "error": errorMap as Any
+    ])
+  }
+
+  func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
+    let charId = getCharacteristicId(characteristic, for: characteristic.service, for: peripheral)
+    guard let promise = writeCharPromises.removeValue(forKey: charId) else { return }
+    if let error = error {
+      promise.reject(error.localizedDescription)
+    } else {
+      promise.resolve(serializeCharacteristic(characteristic, for: peripheral))
+    }
+  }
+
+  func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor descriptor: CBDescriptor, error: Error?) {
+    guard let characteristic = descriptor.characteristic else { return }
+    let descId = getDescriptorId(descriptor, for: characteristic, for: peripheral)
+    guard let promise = readDescPromises.removeValue(forKey: descId) else { return }
+    if let error = error {
+      promise.reject(error.localizedDescription)
+    } else {
+      promise.resolve(serializeDescriptor(descriptor, for: peripheral))
+    }
+  }
+
+  func peripheral(_ peripheral: CBPeripheral, didWriteValueFor descriptor: CBDescriptor, error: Error?) {
+    guard let characteristic = descriptor.characteristic else { return }
+    let descId = getDescriptorId(descriptor, for: characteristic, for: peripheral)
+    guard let promise = writeDescPromises.removeValue(forKey: descId) else { return }
+    if let error = error {
+      promise.reject(error.localizedDescription)
+    } else {
+      promise.resolve(serializeDescriptor(descriptor, for: peripheral))
+    }
+  }
+
+  func peripheral(_ peripheral: CBPeripheral, didReadRSSI RSSI: NSNumber, error: Error?) {
+    guard let promise = rssiPromises.removeValue(forKey: peripheral.identifier) else { return }
+    if let error = error {
+      promise.reject(error.localizedDescription)
+    } else {
+      rssiByPeripheral[peripheral.identifier] = RSSI
+      promise.resolve(RSSI)
+    }
+  }
+
+  func getBluetoothStateString(_ state: CBManagerState) -> String {
+    switch state {
+    case .unknown:
+      return "Unknown"
+    case .resetting:
+      return "Resetting"
+    case .unsupported:
+      return "Unsupported"
+    case .unauthorized:
+      return "Unauthorized"
+    case .poweredOff:
+      return "PoweredOff"
+    case .poweredOn:
+      return "PoweredOn"
+    @unknown default:
+      return "Unknown"
+    }
+  }
+
+  func serializeDevice(_ peripheral: CBPeripheral, rssi: NSNumber?, advData: [String: Any]?) -> [String: Any?] {
+    let serviceUUIDs = (advData?[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID])?.map { $0.uuidString }
+    let overflowUUIDs = (advData?[CBAdvertisementDataOverflowServiceUUIDsKey] as? [CBUUID])?.map { $0.uuidString }
+    let solicitedUUIDs = (advData?[CBAdvertisementDataSolicitedServiceUUIDsKey] as? [CBUUID])?.map { $0.uuidString }
+    let manufacturerData = (advData?[CBAdvertisementDataManufacturerDataKey] as? Data)?.base64EncodedString()
+    let serviceData = (advData?[CBAdvertisementDataServiceDataKey] as? [CBUUID: Data])?.reduce(into: [String: String]()) { result, item in
+      result[item.key.uuidString] = item.value.base64EncodedString()
+    }
+    let localName = advData?[CBAdvertisementDataLocalNameKey] as? String
+    let txPower = advData?[CBAdvertisementDataTxPowerLevelKey] as? NSNumber
+
+    return [
+      "id": peripheral.identifier.uuidString,
+      "name": peripheral.name ?? localName,
+      "rssi": rssi,
+      "mtu": peripheral.maximumWriteValueLength(for: .withoutResponse),
+      "manufacturerData": manufacturerData,
+      "serviceUUIDs": serviceUUIDs,
+      "serviceData": serviceData,
+      "txPowerLevel": txPower,
+      "solicitedServiceUUIDs": solicitedUUIDs,
+      "overflowServiceUUIDs": overflowUUIDs,
+      "localName": localName
+    ]
+  }
+
+  func serializeService(_ service: CBService, for peripheral: CBPeripheral) -> [String: Any?] {
+    return [
+      "id": getServiceId(service),
+      "uuid": service.uuid.uuidString,
+      "deviceID": peripheral.identifier.uuidString,
+      "isPrimary": service.isPrimary
+    ]
+  }
+
+  func serializeCharacteristic(_ characteristic: CBCharacteristic, for peripheral: CBPeripheral) -> [String: Any?] {
+    let props = characteristic.properties
+    return [
+      "id": getCharacteristicId(characteristic, for: characteristic.service, for: peripheral),
+      "uuid": characteristic.uuid.uuidString,
+      "serviceID": getServiceId(characteristic.service),
+      "serviceUUID": characteristic.service.uuid.uuidString,
+      "deviceID": peripheral.identifier.uuidString,
+      "isReadable": props.contains(.read),
+      "isWritableWithResponse": props.contains(.write),
+      "isWritableWithoutResponse": props.contains(.writeWithoutResponse),
+      "isNotifiable": props.contains(.notify),
+      "isIndicatable": props.contains(.indicate),
+      "value": characteristic.value?.base64EncodedString()
+    ]
+  }
+
+  func serializeDescriptor(_ descriptor: CBDescriptor, for peripheral: CBPeripheral) -> [String: Any?] {
+    guard let characteristic = descriptor.characteristic else {
+      return [
+        "id": getObjectId(descriptor),
+        "uuid": descriptor.uuid.uuidString,
+        "characteristicID": 0,
+        "characteristicUUID": "",
+        "serviceID": 0,
+        "serviceUUID": "",
+        "deviceID": peripheral.identifier.uuidString,
+        "value": descriptorValueBase64(descriptor.value)
+      ]
+    }
+
+    return [
+      "id": getDescriptorId(descriptor, for: characteristic, for: peripheral),
+      "uuid": descriptor.uuid.uuidString,
+      "characteristicID": getCharacteristicId(characteristic, for: characteristic.service, for: peripheral),
+      "characteristicUUID": characteristic.uuid.uuidString,
+      "serviceID": getServiceId(characteristic.service),
+      "serviceUUID": characteristic.service.uuid.uuidString,
+      "deviceID": peripheral.identifier.uuidString,
+      "value": descriptorValueBase64(descriptor.value)
+    ]
+  }
+
+  func getCharacteristicId(_ characteristic: CBCharacteristic, for service: CBService, for peripheral: CBPeripheral) -> Int {
+    let id = getObjectId(characteristic)
+    characteristicsById[id] = characteristic
+    _ = getServiceId(service)
+    return id
+  }
+
+  func getDescriptorId(_ descriptor: CBDescriptor, for characteristic: CBCharacteristic, for peripheral: CBPeripheral) -> Int {
+    let id = getObjectId(descriptor)
+    descriptorsById[id] = descriptor
+    _ = getCharacteristicId(characteristic, for: characteristic.service, for: peripheral)
+    return id
+  }
+
+  private func getServiceId(_ service: CBService) -> Int {
+    let id = getObjectId(service)
+    servicesById[id] = service
+    return id
+  }
+
+  private func getObjectId(_ object: AnyObject) -> Int {
+    let key = ObjectIdentifier(object)
+    if let id = idsByObject[key] {
+      return id
+    }
+    let id = nextId
+    nextId += 1
+    idsByObject[key] = id
+    return id
+  }
+
+  private func finishDiscoveryIfReady(for peripheral: CBPeripheral) {
+    let servicePending = !(pendingDiscoveryServices[peripheral.identifier]?.isEmpty ?? true)
+    let characteristicPending = !(pendingDiscoveryCharacteristics[peripheral.identifier]?.isEmpty ?? true)
+    if !servicePending && !characteristicPending {
+      pendingDiscoveryServices.removeValue(forKey: peripheral.identifier)
+      pendingDiscoveryCharacteristics.removeValue(forKey: peripheral.identifier)
+      discoveryPromises.removeValue(forKey: peripheral.identifier)?.resolve(serializeDevice(peripheral, rssi: rssiByPeripheral[peripheral.identifier], advData: advertisementDataByPeripheral[peripheral.identifier]))
+    }
+  }
+
+  private func descriptorValueBase64(_ value: Any?) -> String? {
+    if let data = value as? Data {
+      return data.base64EncodedString()
+    }
+    if let string = value as? String {
+      return string.data(using: .utf8)?.base64EncodedString()
+    }
+    if let number = value as? NSNumber {
+      return "\(number)".data(using: .utf8)?.base64EncodedString()
+    }
+    return nil
+  }
+
+  private func bleError(_ error: Error, code: Int, deviceID: String? = nil, characteristicUUID: String? = nil) -> [String: Any?] {
+    return [
+      "errorCode": code,
+      "attErrorCode": nil,
+      "iosErrorCode": (error as NSError).code,
+      "androidErrorCode": nil,
+      "reason": error.localizedDescription,
+      "deviceID": deviceID,
+      "characteristicUUID": characteristicUUID
+    ]
   }
 }
