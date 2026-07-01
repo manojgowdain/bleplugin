@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "index.ts",
   "dependencies": {
-    "blekit": "^0.2.0",
+    "blekit": "^0.3.0",
     "expo": "~56.0.8",
     "expo-dev-client": "~56.0.20",
     "expo-status-bar": "~56.0.4",
