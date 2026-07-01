@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useRef, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { BleManager } from 'react-native-ble-plx';
+import { BleManager } from 'blekit';
 import Toast from 'react-native-toast-message';
 import { SERVICE_UUID, CHARACTERISTICS, STORAGE_KEYS } from '../Screans/uuids';
 
