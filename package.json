@@ -1,6 +1,6 @@
 {
   "name": "blekit",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "My new module",
   "main": "build/index.js",
   "types": "build/index.d.ts",
@@ -53,8 +53,8 @@
   },
   "dependencies": {
     "blekit": "^0.3.0",
+    "expo": "*",
     "react": "*",
-    "react-native": "*",
-    "expo": "*"
+    "react-native": "*"
   }
 }
