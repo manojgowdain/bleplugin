@@ -4,46 +4,40 @@
     "slug": "sko-fit",
     "version": "1.0.1",
     "orientation": "portrait",
-
     "icon": "./assets/logv2.png",
-
     "scheme": "skofit",
     "userInterfaceStyle": "automatic",
-
     "splash": {
       "image": "./assets/logv2.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
-
     "updates": {
       "fallbackToCacheTimeout": 0,
       "url": "https://u.expo.dev/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
     },
-
-    "assetBundlePatterns": ["**/*"],
-
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.manoj2002.skoFit",
       "buildNumber": "2",
-
       "icon": "./assets/logv2.png",
-
       "splash": {
         "image": "./assets/logv2.png",
         "resizeMode": "contain",
         "backgroundColor": "#ffffff"
       },
-
       "infoPlist": {
         "NSBluetoothAlwaysUsageDescription": "This app needs access to Bluetooth to connect to fitness devices",
         "NSBluetoothPeripheralUsageDescription": "This app needs access to Bluetooth to connect to fitness devices",
-        "UIBackgroundModes": ["bluetooth-central"],
+        "UIBackgroundModes": [
+          "bluetooth-central"
+        ],
         "ITSAppUsesNonExemptEncryption": false
       }
     },
-
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/logv2.png",
@@ -60,13 +54,13 @@
         "android.permission.ACCESS_COARSE_LOCATION"
       ]
     },
-
     "web": {
       "favicon": "./assets/favicon.png"
     },
-
-    "plugins": ["expo-system-ui"],
-
+    "plugins": [
+      "expo-system-ui",
+      "blekit"
+    ],
     "extra": {
       "eas": {
         "projectId": "e2dcccd3-f3cb-41ae-a2f0-0b5f9c8e3664",
