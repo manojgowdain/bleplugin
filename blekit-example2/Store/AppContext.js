@@ -6,6 +6,7 @@ import { SERVICE_UUID, CHARACTERISTICS, STORAGE_KEYS } from '../Screans/uuids';
 
 const AppContext = createContext();
 
+
 export const useAppContext = () => {
   const context = useContext(AppContext);
   if (!context) {
@@ -13,6 +14,7 @@ export const useAppContext = () => {
   }
   return context;
 };
+
 
 export const AppProvider = ({ children }) => {
   const [deviceInfo, setDeviceInfo] = useState(null);
