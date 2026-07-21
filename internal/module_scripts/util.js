@@ -8,3 +8,4 @@ function spawnSyncWithAutoShell(command, args, options) {
 }
 
 module.exports = { spawnSyncWithAutoShell };
+
