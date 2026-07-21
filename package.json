@@ -55,6 +55,7 @@
     "blekit": "^0.3.0",
     "expo": "*",
     "react": "*",
-    "react-native": "*"
+    "react-native": "*",
+    "react-native-ble-plx": "^3.5.1"
   }
 }
